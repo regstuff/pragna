@@ -116,7 +116,7 @@
   <nav class="nav-bar">
     <div class="nav-brand">
       <div class="brand-icon brand-icon-img">
-        <img src="/logo.png" alt="Pragna logo" />
+        <img src="logo.png" alt="Pragna logo" />
       </div>
       <span>Pragna</span>
     </div>
