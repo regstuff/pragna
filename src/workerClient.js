@@ -1,27 +1,28 @@
 // ============================================================
 // PRAGNA — Worker Client
-// Main-thread wrapper for communicating with the Web Worker
+// Main-thread wrapper for communicating with the Web Worker.
+// Spawns a new worker per pipeline run to allow concurrent seeds.
 // ============================================================
 
-let worker = null;
+/** @type {Map<number, Worker>} Active workers keyed by seedId */
+const workers = new Map();
+
 let progressCallbacks = [];
 let errorCallbacks = [];
 let completeCallbacks = [];
 let chunksCallbacks = [];
 let streamCallbacks = [];
-let running = false;
 
-function ensureWorker() {
-    if (!worker) {
-        worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-        worker.onmessage = handleMessage;
-        worker.onerror = (e) => {
-            console.error('Worker error:', e);
-            running = false;
-            errorCallbacks.forEach(cb => cb({ step: 0, error: e.message }));
-        };
-    }
-    return worker;
+function createWorker(seedId) {
+    const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    w.onmessage = handleMessage;
+    w.onerror = (e) => {
+        console.error(`Worker error (seed ${seedId}):`, e);
+        workers.delete(seedId);
+        errorCallbacks.forEach(cb => cb({ seedId, step: 0, error: e.message }));
+    };
+    workers.set(seedId, w);
+    return w;
 }
 
 function handleMessage(e) {
@@ -34,11 +35,16 @@ function handleMessage(e) {
             streamCallbacks.forEach(cb => cb(msg));
             break;
         case 'ERROR':
-            running = false;
+            workers.delete(msg.seedId);
             errorCallbacks.forEach(cb => cb(msg));
             break;
         case 'COMPLETE':
-            running = false;
+            // Terminate the worker now that the pipeline is done
+            const doneWorker = workers.get(msg.seedId);
+            if (doneWorker) {
+                doneWorker.terminate();
+                workers.delete(msg.seedId);
+            }
             completeCallbacks.forEach(cb => cb(msg));
             break;
         case 'CHUNKS_ADDED':
@@ -48,29 +54,30 @@ function handleMessage(e) {
 }
 
 /**
- * Start the pipeline for a seed.
+ * Start the pipeline for a seed. Creates a new dedicated worker.
  */
 export function startPipeline(seedId, fileHandle = null) {
-    const w = ensureWorker();
-    running = true;
+    // If a worker already exists for this seed, terminate it first
+    stopPipeline(seedId);
+    const w = createWorker(seedId);
     w.postMessage({ type: 'START', seedId, fileHandle });
 }
 
 /**
- * Resume a failed/interrupted pipeline.
+ * Resume a failed/interrupted pipeline. Creates a new dedicated worker.
  */
 export function resumePipeline(seedId, startFromStep, fileHandle = null) {
-    const w = ensureWorker();
-    running = true;
+    stopPipeline(seedId);
+    const w = createWorker(seedId);
     w.postMessage({ type: 'RESUME', seedId, startFromStep, fileHandle });
 }
 
 /**
- * Notify worker that settings have changed.
+ * Notify ALL running workers that settings have changed.
  */
 export function notifySettingsUpdate() {
-    if (worker) {
-        worker.postMessage({ type: 'SETTINGS_UPDATED' });
+    for (const w of workers.values()) {
+        w.postMessage({ type: 'SETTINGS_UPDATED' });
     }
 }
 
@@ -125,31 +132,34 @@ export function onStreamToken(callback) {
 }
 
 /**
- * Check if a pipeline is currently running.
+ * Check if any pipeline is currently running.
  */
 export function isRunning() {
-    return running;
+    return workers.size > 0;
 }
 
 /**
- * Stop the currently running pipeline by terminating the worker.
- * Returns the seedId that was stopped (if any).
+ * Stop a specific seed's pipeline by terminating its worker.
+ * If no seedId is provided, stops all workers.
  */
-export function stopPipeline() {
-    if (worker) {
-        worker.terminate();
-        worker = null;
-        running = false;
+export function stopPipeline(seedId = null) {
+    if (seedId != null) {
+        const w = workers.get(seedId);
+        if (w) {
+            w.terminate();
+            workers.delete(seedId);
+        }
+    } else {
+        for (const [id, w] of workers.entries()) {
+            w.terminate();
+            workers.delete(id);
+        }
     }
 }
 
 /**
- * Terminate the worker (cleanup).
+ * Terminate all workers (cleanup).
  */
 export function terminateWorker() {
-    if (worker) {
-        worker.terminate();
-        worker = null;
-        running = false;
-    }
+    stopPipeline();
 }

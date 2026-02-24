@@ -121,7 +121,7 @@
   }
 
   function handleStop(seedId) {
-    stopPipeline();
+    stopPipeline(seedId);
     activeSeeds.update(s => {
       const copy = { ...s };
       delete copy[seedId];
@@ -135,10 +135,11 @@
     currentView.set('workspace');
   }
 
-  function getStreamsForSeed(seedId) {
+  function getStreamsForSeed(seedId, step) {
+    const prefix = `${seedId}-${step}-`;
     const streams = [];
     for (const [key, val] of Object.entries(tokenMap)) {
-      if (key.startsWith(`${seedId}-`)) {
+      if (key.startsWith(prefix)) {
         streams.push(val);
       }
     }
@@ -277,21 +278,19 @@ Example: Investigate the physiological effects of traditional Indian New Year ce
           {#if progress.detail}
             <div class="progress-detail">{progress.detail}</div>
           {/if}
-          {#each [getStreamsForSeed(parseInt(seedId))] as streams}
-            {#if streams.length > 0}
-              <div class="stream-preview-area">
-                {#each streams as stream}
-                  <div class="stream-preview-card">
-                    <div class="stream-preview-header">
-                      <span class="stream-model-badge">🤖 {stream.model}</span>
-                      <span class="stream-step-label">Step {stream.step}{stream.substep != null ? ` · #${stream.substep + 1}` : ''}</span>
-                    </div>
-                    <div class="stream-preview-text">{truncateStreamText(stream.text)}<span class="stream-cursor">▊</span></div>
+          {#if getStreamsForSeed(parseInt(seedId), progress.step).length > 0}
+            <div class="stream-preview-area">
+              {#each getStreamsForSeed(parseInt(seedId), progress.step) as stream (stream.model + '-' + stream.substep)}
+                <div class="stream-preview-card">
+                  <div class="stream-preview-header">
+                    <span class="stream-model-badge">🤖 {stream.model}</span>
+                    <span class="stream-step-label">Step {stream.step}{stream.substep != null ? ` · #${stream.substep + 1}` : ''}</span>
                   </div>
-                {/each}
-              </div>
-            {/if}
-          {/each}
+                  <div class="stream-preview-text">{truncateStreamText(stream.text)}<span class="stream-cursor">▊</span></div>
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/each}
     </div>

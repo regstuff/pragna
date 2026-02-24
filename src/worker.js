@@ -48,6 +48,9 @@ function getFanOutModels() {
 
 // ======================== API CALLS ========================
 
+// Inactivity timeout: abort if no SSE chunk received for 10 minutes
+const STREAM_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Parse a single SSE line and extract the content delta.
  * Returns the text fragment or null if the line is not a content chunk.
@@ -58,7 +61,7 @@ function parseSSEChunk(line) {
     if (payload === '[DONE]') return null;
     try {
         const obj = JSON.parse(payload);
-        return obj.choices?.[0]?.delta?.content || null;
+        return obj.choices?.[0]?.delta?.content ?? null;
     } catch {
         return null;
     }
@@ -66,6 +69,9 @@ function parseSSEChunk(line) {
 
 /**
  * Call LiteLLM with streaming and exponential backoff retry.
+ * Includes a per-chunk inactivity timeout — if no data arrives for
+ * STREAM_TIMEOUT_MS, the request is aborted and retried.
+ *
  * @param {string} model - The model identifier.
  * @param {Array} messages - The chat messages array.
  * @param {Object} [opts] - Optional settings.
@@ -78,6 +84,9 @@ async function callLLM(model, messages, opts = {}) {
     const apiKey = getSetting('litellmApiKey', '');
 
     for (let attempt = 0; attempt < retries; attempt++) {
+        const controller = new AbortController();
+        let inactivityTimer = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+
         try {
             const res = await fetch(`${baseUrl}/v1/chat/completions`, {
                 method: 'POST',
@@ -92,9 +101,11 @@ async function callLLM(model, messages, opts = {}) {
                     temperature: 0.7,
                     stream: true,
                 }),
+                signal: controller.signal,
             });
 
             if (!res.ok) {
+                clearTimeout(inactivityTimer);
                 const errText = await res.text().catch(() => '');
                 throw new Error(`LLM API error ${res.status}: ${errText}`);
             }
@@ -109,6 +120,10 @@ async function callLLM(model, messages, opts = {}) {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+
+                // Reset inactivity timer on every received chunk
+                clearTimeout(inactivityTimer);
+                inactivityTimer = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
@@ -130,6 +145,8 @@ async function callLLM(model, messages, opts = {}) {
                 }
             }
 
+            clearTimeout(inactivityTimer);
+
             // Process any remaining buffer
             if (buffer.trim()) {
                 const fragment = parseSSEChunk(buffer.trim());
@@ -148,6 +165,7 @@ async function callLLM(model, messages, opts = {}) {
             }
             return accumulated;
         } catch (err) {
+            clearTimeout(inactivityTimer);
             if (attempt < retries - 1) {
                 const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
                 await new Promise(r => setTimeout(r, delay));
@@ -320,7 +338,7 @@ async function getExistingOutputs(seedId, stepNum) {
  */
 async function executeFanOut(seedId, stepNum, promptFn) {
     const models = getFanOutModels();
-    postProgress(seedId, stepNum, `Starting fan-out with ${models.length} models...`);
+    postProgress(seedId, stepNum, `Starting fan-out with ${models.length} models: ${models.join(', ')}`);
 
     const promises = models.map((model, idx) =>
         callLLM(model, [{ role: 'user', content: promptFn(model) }], {

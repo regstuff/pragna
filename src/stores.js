@@ -36,3 +36,7 @@ export const stepUpdateTick = writable(0);
 // Live streaming tokens from LLM calls: Map<string, { model, text, step, substep }>
 // Key format: `${seedId}-${step}-${substep}`
 export const streamingTokens = writable({});
+
+// In-memory cache of all chunks (with vectors) — loaded once on startup,
+// refreshed on CHUNKS_ADDED. Avoids repeated IndexedDB roundtrips on every search.
+export const cachedChunks = writable([]);

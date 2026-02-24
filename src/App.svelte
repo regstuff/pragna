@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { currentView, settingsOpen, activeSeeds, seedsChanged, stepUpdateTick, streamingTokens } from './stores.js';
+  import { currentView, settingsOpen, activeSeeds, seedsChanged, stepUpdateTick, streamingTokens, cachedChunks } from './stores.js';
   import { initDefaultSettings, getAllChunks } from './db.js';
   import { initSearchIndex, bulkAddToIndex } from './search.js';
   import { isRunning, onProgress, onError, onComplete, onChunksAdded, onStreamToken, stopPipeline } from './workerClient.js';
@@ -31,10 +31,11 @@
     // Initialize default settings
     await initDefaultSettings();
 
-    // Initialize search index and load existing chunks
+    // Initialize search index and load existing chunks into memory cache
     initSearchIndex();
     try {
       const chunks = await getAllChunks();
+      cachedChunks.set(chunks);
       if (chunks.length > 0) {
         bulkAddToIndex(chunks);
       }
@@ -44,15 +45,30 @@
 
     // Register worker event handlers
     unsubProgress = onProgress((msg) => {
-      activeSeeds.update(seeds => ({
-        ...seeds,
-        [msg.seedId]: {
-          step: msg.step,
-          substep: msg.substep,
-          detail: msg.detail,
-          status: 'running',
+      activeSeeds.update(seeds => {
+        const prev = seeds[msg.seedId];
+        // Clear streaming tokens when transitioning to a new step
+        if (prev && prev.step !== msg.step) {
+          streamingTokens.update(tokens => {
+            const copy = { ...tokens };
+            for (const key of Object.keys(copy)) {
+              if (key.startsWith(`${msg.seedId}-`)) {
+                delete copy[key];
+              }
+            }
+            return copy;
+          });
         }
-      }));
+        return {
+          ...seeds,
+          [msg.seedId]: {
+            step: msg.step,
+            substep: msg.substep,
+            detail: msg.detail,
+            status: 'running',
+          }
+        };
+      });
       // Signal ReadingPane to re-fetch steps
       stepUpdateTick.update(n => n + 1);
     });
@@ -105,11 +121,12 @@
     });
 
     unsubChunks = onChunksAdded(async (msg) => {
-      // Reload chunks from Dexie and add to FlexSearch
+      // Reload chunks from Dexie, update in-memory cache and FlexSearch
       try {
         const { getAllChunks } = await import('./db.js');
         const { bulkAddToIndex, initSearchIndex } = await import('./search.js');
         const chunks = await getAllChunks();
+        cachedChunks.set(chunks);
         initSearchIndex();
         bulkAddToIndex(chunks);
       } catch (e) {

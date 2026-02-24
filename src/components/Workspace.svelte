@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { selectedSeedId, searchQuery, searchResults, selectedTags } from '../stores.js';
-  import { getAllSeeds, getAllChunks, getSetting } from '../db.js';
+  import { selectedSeedId, searchQuery, searchResults, selectedTags, cachedChunks } from '../stores.js';
+  import { getAllSeeds, getSetting } from '../db.js';
   import { hybridSearch } from '../search.js';
   import SeedTable from './SeedTable.svelte';
   import SearchBar from './SearchBar.svelte';
@@ -13,13 +13,16 @@
   let focusStepNum = $state(null);
   let focusChunkHeader = $state(null);
   let focusQueryText = $state(null);
+  let allChunksCache = $state([]);
 
   const unsubId = selectedSeedId.subscribe(v => selectedId = v);
   const unsubQuery = searchQuery.subscribe(v => query = v);
+  const unsubChunks = cachedChunks.subscribe(v => allChunksCache = v);
 
   onDestroy(() => {
     unsubId?.();
     unsubQuery?.();
+    unsubChunks?.();
   });
 
   async function handleSearch(queryText) {
@@ -55,7 +58,8 @@
       console.warn('Embedding for search failed, using text-only search:', e);
     }
 
-    const allChunks = await getAllChunks();
+    // Use in-memory cached chunks instead of hitting IndexedDB
+    const allChunks = allChunksCache;
     const results = hybridSearch(queryText, queryVec, allChunks);
     searchResults.set(results);
 
