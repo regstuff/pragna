@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { getSeed, getStepsForSeed, deleteDownstreamSteps, saveStep, deleteChunksForStep, saveChunks, updateSeedStatus, updateSeedTags, deleteSeed, exportDatabase } from '../db.js';
+  import { getSeed, getStepsForSeed, deleteDownstreamSteps, deleteStep, saveStep, deleteChunksForStep, saveChunks, updateSeedStatus, updateSeedTags, deleteSeed, exportDatabase } from '../db.js';
   import { removeFromIndex, initSearchIndex, bulkAddToIndex } from '../search.js';
   import { chunkDocument } from '../chunking.js';
   import { resumePipeline } from '../workerClient.js';
@@ -196,7 +196,7 @@
     const oldSteps = getStepOutputs(stepNum);
     for (const os of oldSteps) {
       await deleteChunksForStep(os.id);
-      // Can't easily delete individual step, we'll update
+      await deleteStep(os.id);
     }
 
     // Save edited step

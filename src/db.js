@@ -100,6 +100,10 @@ export async function deleteDownstreamSteps(seedId, fromStep) {
     });
 }
 
+export async function deleteStep(id) {
+    return db.steps.delete(id);
+}
+
 // ======================== CHUNK HELPERS ========================
 
 export async function saveChunks(chunks) {

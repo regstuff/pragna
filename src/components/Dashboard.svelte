@@ -120,7 +120,13 @@
     }));
   }
 
-  function handleStop(seedId) {
+  async function handleStop(seedId) {
+    // Persist the current step so Resume works after page refresh
+    const progress = activeSeedMap[seedId];
+    if (progress?.step) {
+      await updateSeedStatus(seedId, `error_step_${progress.step}`);
+    }
+
     stopPipeline(seedId);
     activeSeeds.update(s => {
       const copy = { ...s };
