@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { activeSeeds, currentView, selectedSeedId, seedsChanged, backupFileHandle } from '../stores.js';
+  import { activeSeeds, currentView, selectedSeedId, seedsChanged, backupFileHandle, streamingTokens } from '../stores.js';
   import { createSeed, getAllSeeds, updateSeedStatus, updateSeedTags, exportDatabase, importDatabase } from '../db.js';
   import { startPipeline, resumePipeline, stopPipeline } from '../workerClient.js';
   import Stepper from './Stepper.svelte';
@@ -14,9 +14,11 @@
   let changeCounter = $state(0);
   let importing = $state(false);
   let exporting = $state(false);
+  let tokenMap = $state({});
 
   const unsubActive = activeSeeds.subscribe(v => activeSeedMap = v);
   const unsubHandle = backupFileHandle.subscribe(v => storedHandle = v);
+  const unsubTokens = streamingTokens.subscribe(v => tokenMap = v);
   const unsubChanged = seedsChanged.subscribe(v => {
     changeCounter = v;
     loadSeeds();
@@ -29,6 +31,7 @@
   onDestroy(() => {
     unsubActive?.();
     unsubHandle?.();
+    unsubTokens?.();
     unsubChanged?.();
   });
 
@@ -130,6 +133,21 @@
   function viewInWorkspace(seedId) {
     selectedSeedId.set(seedId);
     currentView.set('workspace');
+  }
+
+  function getStreamsForSeed(seedId) {
+    const streams = [];
+    for (const [key, val] of Object.entries(tokenMap)) {
+      if (key.startsWith(`${seedId}-`)) {
+        streams.push(val);
+      }
+    }
+    return streams;
+  }
+
+  function truncateStreamText(text, maxLen = 300) {
+    if (!text || text.length <= maxLen) return text || '';
+    return '…' + text.slice(-maxLen);
   }
 
   function getStatusBadge(status) {
@@ -259,6 +277,21 @@ Example: Investigate the physiological effects of traditional Indian New Year ce
           {#if progress.detail}
             <div class="progress-detail">{progress.detail}</div>
           {/if}
+          {#each [getStreamsForSeed(parseInt(seedId))] as streams}
+            {#if streams.length > 0}
+              <div class="stream-preview-area">
+                {#each streams as stream}
+                  <div class="stream-preview-card">
+                    <div class="stream-preview-header">
+                      <span class="stream-model-badge">🤖 {stream.model}</span>
+                      <span class="stream-step-label">Step {stream.step}{stream.substep != null ? ` · #${stream.substep + 1}` : ''}</span>
+                    </div>
+                    <div class="stream-preview-text">{truncateStreamText(stream.text)}<span class="stream-cursor">▊</span></div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {/each}
         </div>
       {/each}
     </div>
@@ -504,5 +537,60 @@ Example: Investigate the physiological effects of traditional Indian New Year ce
     font-size: var(--text-xs);
     color: var(--on-surface-variant);
     opacity: 0.6;
+  }
+
+  /* Streaming preview */
+  .stream-preview-area {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+  }
+  .stream-preview-card {
+    background: var(--surface-container);
+    border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-md);
+    padding: var(--space-sm) var(--space-md);
+    overflow: hidden;
+  }
+  .stream-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-xs);
+  }
+  .stream-model-badge {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--primary);
+    background: var(--primary-container);
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+  }
+  .stream-step-label {
+    font-size: var(--text-xs);
+    color: var(--on-surface-variant);
+    opacity: 0.6;
+  }
+  .stream-preview-text {
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    color: var(--on-surface-variant);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 80px;
+    overflow: hidden;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    opacity: 0.8;
+  }
+  .stream-cursor {
+    animation: blink-cursor 0.8s steps(2) infinite;
+    color: var(--primary);
+    font-weight: bold;
+  }
+  @keyframes blink-cursor {
+    0% { opacity: 1; }
+    50% { opacity: 0; }
+    100% { opacity: 1; }
   }
 </style>

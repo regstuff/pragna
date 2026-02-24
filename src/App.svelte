@@ -1,9 +1,9 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { currentView, settingsOpen, activeSeeds, seedsChanged, stepUpdateTick } from './stores.js';
+  import { currentView, settingsOpen, activeSeeds, seedsChanged, stepUpdateTick, streamingTokens } from './stores.js';
   import { initDefaultSettings, getAllChunks } from './db.js';
   import { initSearchIndex, bulkAddToIndex } from './search.js';
-  import { isRunning, onProgress, onError, onComplete, onChunksAdded, stopPipeline } from './workerClient.js';
+  import { isRunning, onProgress, onError, onComplete, onChunksAdded, onStreamToken, stopPipeline } from './workerClient.js';
   import SettingsModal from './components/SettingsModal.svelte';
   import Dashboard from './components/Dashboard.svelte';
   import Workspace from './components/Workspace.svelte';
@@ -25,7 +25,7 @@
   }
 
   // Worker event handlers
-  let unsubProgress, unsubError, unsubComplete, unsubChunks;
+  let unsubProgress, unsubError, unsubComplete, unsubChunks, unsubStream;
 
   onMount(async () => {
     // Initialize default settings
@@ -57,6 +57,20 @@
       stepUpdateTick.update(n => n + 1);
     });
 
+    unsubStream = onStreamToken((msg) => {
+      const key = `${msg.seedId}-${msg.step}-${msg.substep}`;
+      streamingTokens.update(tokens => ({
+        ...tokens,
+        [key]: {
+          model: msg.model,
+          text: msg.text,
+          step: msg.step,
+          substep: msg.substep,
+          seedId: msg.seedId,
+        }
+      }));
+    });
+
     unsubError = onError((msg) => {
       activeSeeds.update(seeds => ({
         ...seeds,
@@ -74,6 +88,16 @@
       activeSeeds.update(seeds => {
         const copy = { ...seeds };
         delete copy[msg.seedId];
+        return copy;
+      });
+      // Clear streaming tokens for this seed
+      streamingTokens.update(tokens => {
+        const copy = { ...tokens };
+        for (const key of Object.keys(copy)) {
+          if (key.startsWith(`${msg.seedId}-`)) {
+            delete copy[key];
+          }
+        }
         return copy;
       });
       stepUpdateTick.update(n => n + 1);
@@ -103,6 +127,7 @@
     unsubError?.();
     unsubComplete?.();
     unsubChunks?.();
+    unsubStream?.();
     window.removeEventListener('beforeunload', handleBeforeUnload);
   });
 

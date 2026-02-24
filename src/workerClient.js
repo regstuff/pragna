@@ -8,6 +8,7 @@ let progressCallbacks = [];
 let errorCallbacks = [];
 let completeCallbacks = [];
 let chunksCallbacks = [];
+let streamCallbacks = [];
 let running = false;
 
 function ensureWorker() {
@@ -28,6 +29,9 @@ function handleMessage(e) {
     switch (msg.type) {
         case 'PROGRESS':
             progressCallbacks.forEach(cb => cb(msg));
+            break;
+        case 'STREAM_TOKEN':
+            streamCallbacks.forEach(cb => cb(msg));
             break;
         case 'ERROR':
             running = false;
@@ -107,6 +111,16 @@ export function onChunksAdded(callback) {
     chunksCallbacks.push(callback);
     return () => {
         chunksCallbacks = chunksCallbacks.filter(cb => cb !== callback);
+    };
+}
+
+/**
+ * Register a streaming token callback (for real-time LLM output preview).
+ */
+export function onStreamToken(callback) {
+    streamCallbacks.push(callback);
+    return () => {
+        streamCallbacks = streamCallbacks.filter(cb => cb !== callback);
     };
 }
 

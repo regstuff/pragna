@@ -49,9 +49,31 @@ function getFanOutModels() {
 // ======================== API CALLS ========================
 
 /**
- * Call LiteLLM with exponential backoff retry (Tier 1).
+ * Parse a single SSE line and extract the content delta.
+ * Returns the text fragment or null if the line is not a content chunk.
  */
-async function callLLM(model, messages, retries = 3) {
+function parseSSEChunk(line) {
+    if (!line.startsWith('data: ')) return null;
+    const payload = line.slice(6).trim();
+    if (payload === '[DONE]') return null;
+    try {
+        const obj = JSON.parse(payload);
+        return obj.choices?.[0]?.delta?.content || null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Call LiteLLM with streaming and exponential backoff retry.
+ * @param {string} model - The model identifier.
+ * @param {Array} messages - The chat messages array.
+ * @param {Object} [opts] - Optional settings.
+ * @param {number} [opts.retries=3] - Number of retry attempts.
+ * @param {Function} [opts.onToken] - Callback invoked with (accumulatedText) on each token.
+ */
+async function callLLM(model, messages, opts = {}) {
+    const { retries = 3, onToken = null } = opts;
     const baseUrl = getSetting('litellmUrl', 'http://localhost:4000');
     const apiKey = getSetting('litellmApiKey', '');
 
@@ -68,6 +90,7 @@ async function callLLM(model, messages, retries = 3) {
                     messages,
                     max_tokens: 65536,
                     temperature: 0.7,
+                    stream: true,
                 }),
             });
 
@@ -76,12 +99,54 @@ async function callLLM(model, messages, retries = 3) {
                 throw new Error(`LLM API error ${res.status}: ${errText}`);
             }
 
-            const data = await res.json();
-            const content = data.choices?.[0]?.message?.content || '';
-            if (!content) {
-                console.warn(`LLM returned empty content for model ${model}. Finish reason: ${data.choices?.[0]?.finish_reason}`);
+            // Read the SSE stream
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulated = '';
+            let buffer = ''; // Leftover partial line from previous chunk
+            let tokenCount = 0;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                // Keep the last element as it may be an incomplete line
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+                    const fragment = parseSSEChunk(trimmed);
+                    if (fragment) {
+                        accumulated += fragment;
+                        tokenCount++;
+                        // Throttle onToken callbacks — fire every 5 tokens to avoid flooding
+                        if (onToken && tokenCount % 5 === 0) {
+                            onToken(accumulated);
+                        }
+                    }
+                }
             }
-            return content;
+
+            // Process any remaining buffer
+            if (buffer.trim()) {
+                const fragment = parseSSEChunk(buffer.trim());
+                if (fragment) {
+                    accumulated += fragment;
+                }
+            }
+
+            // Final callback with complete text
+            if (onToken) {
+                onToken(accumulated);
+            }
+
+            if (!accumulated) {
+                console.warn(`LLM returned empty content for model ${model} (streamed).`);
+            }
+            return accumulated;
         } catch (err) {
             if (attempt < retries - 1) {
                 const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
@@ -142,6 +207,17 @@ function postProgress(seedId, step, detail, substep = null) {
         step,
         substep,
         detail,
+    });
+}
+
+function postStreamToken(seedId, step, substep, model, text) {
+    self.postMessage({
+        type: 'STREAM_TOKEN',
+        seedId,
+        step,
+        substep,
+        model,
+        text,
     });
 }
 
@@ -239,7 +315,7 @@ async function getExistingOutputs(seedId, stepNum) {
 }
 
 /**
- * Execute a fan-out step (2, 4, 6): call multiple LLMs in parallel.
+ * Execute a fan-out step (2, 4, 6): call multiple LLMs in parallel with streaming.
  * Uses Promise.allSettled (Tier 2 retry).
  */
 async function executeFanOut(seedId, stepNum, promptFn) {
@@ -247,7 +323,11 @@ async function executeFanOut(seedId, stepNum, promptFn) {
     postProgress(seedId, stepNum, `Starting fan-out with ${models.length} models...`);
 
     const promises = models.map((model, idx) =>
-        callLLM(model, [{ role: 'user', content: promptFn(model) }])
+        callLLM(model, [{ role: 'user', content: promptFn(model) }], {
+            onToken: (text) => {
+                postStreamToken(seedId, stepNum, idx, model, text);
+            },
+        })
             .then(output => {
                 postProgress(seedId, stepNum, `${idx + 1}/${models.length} models responded...`, idx);
                 return { model, output, status: 'fulfilled' };
@@ -280,13 +360,17 @@ async function executeFanOut(seedId, stepNum, promptFn) {
 }
 
 /**
- * Execute a consolidation step (3, 5, 7, 8).
+ * Execute a consolidation step (3, 5, 7, 8) with streaming.
  */
 async function executeConsolidation(seedId, stepNum, prompt, forceModel = null) {
     const model = forceModel || getSetting('consolidationModel', 'gpt-4o');
     postProgress(seedId, stepNum, `Running consolidation...`);
 
-    const output = await callLLM(model, [{ role: 'user', content: prompt }]);
+    const output = await callLLM(model, [{ role: 'user', content: prompt }], {
+        onToken: (text) => {
+            postStreamToken(seedId, stepNum, 0, model, text);
+        },
+    });
 
     const stepId = await saveStepOutput(seedId, stepNum, 0, output, model, prompt.slice(0, 200));
     await chunkAndSave(seedId, stepId, stepNum, output);

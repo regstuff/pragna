@@ -32,3 +32,7 @@ export const backupFileHandle = writable(null);
 
 // Tick counter that increments on every worker step completion (for live ReadingPane updates)
 export const stepUpdateTick = writable(0);
+
+// Live streaming tokens from LLM calls: Map<string, { model, text, step, substep }>
+// Key format: `${seedId}-${step}-${substep}`
+export const streamingTokens = writable({});
