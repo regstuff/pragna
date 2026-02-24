@@ -61,7 +61,10 @@ function parseSSEChunk(line) {
     if (payload === '[DONE]') return null;
     try {
         const obj = JSON.parse(payload);
-        return obj.choices?.[0]?.delta?.content ?? null;
+        const delta = obj.choices?.[0]?.delta;
+        if (!delta) return null;
+        // Standard content, reasoning content, or refusal — take whichever exists
+        return delta.content ?? delta.reasoning_content ?? delta.refusal ?? null;
     } catch {
         return null;
     }
@@ -97,7 +100,7 @@ async function callLLM(model, messages, opts = {}) {
                 body: JSON.stringify({
                     model,
                     messages,
-                    max_tokens: 65536,
+                    max_tokens: 60000,
                     temperature: 0.7,
                     stream: true,
                 }),
@@ -155,6 +158,18 @@ async function callLLM(model, messages, opts = {}) {
                 }
             }
 
+            // If streaming produced nothing, try non-streaming fallback parse
+            if (!accumulated && buffer.trim()) {
+                try {
+                    const fallback = JSON.parse(buffer.trim());
+                    const msg = fallback.choices?.[0]?.message?.content;
+                    if (msg) {
+                        console.info(`Model ${model}: parsed as non-streaming response (fallback).`);
+                        accumulated = msg;
+                    }
+                } catch { /* not valid JSON, ignore */ }
+            }
+
             // Final callback with complete text
             if (onToken) {
                 onToken(accumulated);
@@ -166,6 +181,7 @@ async function callLLM(model, messages, opts = {}) {
             return accumulated;
         } catch (err) {
             clearTimeout(inactivityTimer);
+            console.warn(`callLLM attempt ${attempt + 1}/${retries} failed for ${model}:`, err.message);
             if (attempt < retries - 1) {
                 const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
                 await new Promise(r => setTimeout(r, delay));
@@ -361,11 +377,15 @@ async function executeFanOut(seedId, stepNum, promptFn) {
 
     for (const result of results) {
         const data = result.status === 'fulfilled' ? result.value : result.reason;
-        // Use explicit null check — empty string '' is falsy but is a valid response
-        if (data && data.output != null) {
+        if (data && data.output != null && data.output !== '') {
             const stepId = await saveStepOutput(seedId, stepNum, outputs.length, data.output, data.model);
             await chunkAndSave(seedId, stepId, stepNum, data.output);
             outputs.push(data.output);
+        } else {
+            const modelName = data?.model || 'unknown';
+            const reason = data?.error || (data?.output === '' ? 'empty response' : 'null output');
+            console.error(`Fan-out step ${stepNum}: model "${modelName}" dropped — ${reason}`);
+            postProgress(seedId, stepNum, `⚠️ Model ${modelName} failed: ${reason}`);
         }
     }
 
